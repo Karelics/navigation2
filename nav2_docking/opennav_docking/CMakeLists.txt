@@ -152,9 +152,26 @@ target_link_libraries(simple_non_charging_dock PRIVATE
   tf2::tf2
 )
 
+add_library(wiggler SHARED
+  src/rotate_in_place_wiggler.cpp
+)
+target_include_directories(wiggler
+  PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+)
+target_link_libraries(wiggler PUBLIC
+  ${geometry_msgs_TARGETS}
+  opennav_docking_core::opennav_docking_core
+  rclcpp::rclcpp
+)
+target_link_libraries(wiggler PRIVATE
+  nav2_util::nav2_util_core
+)
+
 pluginlib_export_plugin_description_file(opennav_docking_core plugins.xml)
 
-install(TARGETS ${library_name} controller pose_filter simple_charging_dock simple_non_charging_dock
+install(TARGETS ${library_name} controller pose_filter simple_charging_dock simple_non_charging_dock wiggler
   EXPORT ${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

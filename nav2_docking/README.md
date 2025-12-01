@@ -232,6 +232,9 @@ For debugging purposes, there are several publishers which can be used with RVIZ
 | controller.projection_time | Time to look ahead for collisions (s). | double | 5.0     |
 | controller.simulation_time_step | Time step for projections (s). | double | 0.1     |
 | controller.dock_collision_threshold | Distance (m) from the dock pose to ignore collisions. | double | 0.3     |
+| wiggler | Wiggler plugin to load | string | N/A
+| wiggle_for_initial_perception | Whether to perform the wiggle if initial perception fails. | bool | false |
+| wiggle_suring_approach_if_perception_lost | Whether to perform the wiggle if perception is lost while approaching the dock. | bool | false |
 
 Note: `dock_plugins` and either `docks` or `dock_database` are required.
 
@@ -259,6 +262,11 @@ Note: `dock_plugins` and either `docks` or `dock_database` are required.
 | rotate_to_dock        | Enables backward docking without requiring a sensor for detection during the final approach. When enabled, the robot approaches the staging pose facing forward with sensor coverage for dock detection; after detection, it rotates and backs into the dock using only the initially detected pose for dead reckoning. | bool |  false      |
 
 Note: The external detection rotation angles are setup to work out of the box with Apriltags detectors in `image_proc` and `isaac_ros`.
+
+| RotateInPlaceWiggler Parameter | Description | Type | Default |
+|---------------------------------------------------------------|
+| plugin | Wiggler plugin ('opennav_docking::RotateInPlaceWiggler') | string | "" |
+| angular_speed | Angular speed (rad/s) | double | 0.3 |
 
 ## Etc
 

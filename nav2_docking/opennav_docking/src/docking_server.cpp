@@ -223,7 +223,7 @@ void DockingServer::getPreemptedGoalIfRequested(
 template<typename ActionT>
 bool DockingServer::checkAndWarnIfCancelled(
   std::unique_ptr<nav2_util::SimpleActionServer<ActionT>> & action_server,
-  const std::string &name)
+  const std::string & name)
 {
   if (action_server->is_cancel_requested()) {
     RCLCPP_WARN(get_logger(), "Goal was cancelled. Cancelling %s action", name.c_str());
@@ -235,7 +235,7 @@ bool DockingServer::checkAndWarnIfCancelled(
 template<typename ActionT>
 bool DockingServer::checkAndWarnIfPreempted(
   std::unique_ptr<nav2_util::SimpleActionServer<ActionT>> & action_server,
-  const std::string &name)
+  const std::string & name)
 {
   if (action_server->is_preempt_requested()) {
     RCLCPP_WARN(get_logger(), "Goal was preempted. Cancelling %s action", name.c_str());
@@ -303,7 +303,7 @@ void DockingServer::dockRobot()
     } else {
       std::function<bool()> isPreempted = [this]() {
           return checkAndWarnIfCancelled(docking_action_server_, "dock_robot") ||
-                checkAndWarnIfPreempted(docking_action_server_, "dock_robot");
+                 checkAndWarnIfPreempted(docking_action_server_, "dock_robot");
         };
 
       navigator_->goToPose(
@@ -385,8 +385,7 @@ void DockingServer::dockRobot()
       }
       RCLCPP_INFO(get_logger(), "Returned to staging pose, attempting docking again");
     }
-  }
-  catch (const tf2::TransformException & e) {
+  } catch (const tf2::TransformException & e) {
     result->error_msg = std::string("Transform error: ") + e.what();
     RCLCPP_ERROR(get_logger(), result->error_msg.c_str());
     result->error_code = DockRobot::Result::UNKNOWN;
@@ -486,7 +485,7 @@ void DockingServer::doInitialPerception(Dock *dock, geometry_msgs::msg::PoseStam
     }
 
     if (checkAndWarnIfCancelled(docking_action_server_, "dock_robot") ||
-        checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
+      checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
     {
       return;
     }
@@ -550,7 +549,7 @@ bool DockingServer::approachDock(
 
     // Stop if cancelled/preempted
     if (checkAndWarnIfCancelled(docking_action_server_, "dock_robot") ||
-        checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
+      checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
     {
       return false;
     }
@@ -600,7 +599,7 @@ bool DockingServer::approachDock(
 
     if (this->now() - start > timeout) {
       throw opennav_docking_core::FailedToControl(
-                "Timed out approaching dock; dock nor charging (if applicable) detected");
+            "Timed out approaching dock; dock nor charging (if applicable) detected");
     }
 
     loop_rate.sleep();
@@ -626,7 +625,7 @@ bool DockingServer::waitForCharge(Dock * dock)
     }
 
     if (checkAndWarnIfCancelled(docking_action_server_, "dock_robot") ||
-        checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
+      checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
     {
       return false;
     }
@@ -651,7 +650,7 @@ bool DockingServer::resetApproach(
 
     // Stop if cancelled/preempted
     if (checkAndWarnIfCancelled(docking_action_server_, "dock_robot") ||
-        checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
+      checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
     {
       return false;
     }
@@ -690,7 +689,7 @@ bool DockingServer::getCommandToPose(
     robot_pose.pose.position.x - pose.pose.position.x,
     robot_pose.pose.position.y - pose.pose.position.y);
   const double yaw = angles::shortest_angular_distance(
-      tf2::getYaw(robot_pose.pose.orientation), tf2::getYaw(pose.pose.orientation));
+    tf2::getYaw(robot_pose.pose.orientation), tf2::getYaw(pose.pose.orientation));
   if (dist < linear_tolerance && abs(yaw) < angular_tolerance) {
     return true;
   }
@@ -768,7 +767,7 @@ void DockingServer::undockRobot()
 
     // Get staging pose (in fixed frame)
     geometry_msgs::msg::PoseStamped staging_pose =
-        dock->getStagingPose(dock_pose.pose, dock_pose.header.frame_id);
+      dock->getStagingPose(dock_pose.pose, dock_pose.header.frame_id);
 
     // If we performed a rotation before docking backward, we must rotate the staging pose
     // to match the robot orientation
@@ -788,7 +787,7 @@ void DockingServer::undockRobot()
 
       // Stop if cancelled/preempted
       if (checkAndWarnIfCancelled(undocking_action_server_, "undock_robot") ||
-          checkAndWarnIfPreempted(undocking_action_server_, "undock_robot"))
+        checkAndWarnIfPreempted(undocking_action_server_, "undock_robot"))
       {
         publishZeroVelocity();
         undocking_action_server_->terminate_all(result);
@@ -833,8 +832,7 @@ void DockingServer::undockRobot()
       vel_publisher_->publish(std::move(command));
       loop_rate.sleep();
     }
-  }
-  catch (const tf2::TransformException & e) {
+  } catch (const tf2::TransformException & e) {
     result->error_msg = std::string("Transform error: ") + e.what();
     RCLCPP_ERROR(get_logger(), result->error_msg.c_str());
     result->error_code = DockRobot::Result::UNKNOWN;

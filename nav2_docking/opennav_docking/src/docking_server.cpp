@@ -34,6 +34,9 @@ DockingServer::DockingServer(const rclcpp::NodeOptions & options)
   declare_parameter("wait_charge_timeout", 5.0);
   declare_parameter("dock_approach_timeout", 30.0);
   declare_parameter("rotate_to_dock_timeout", 10.0);
+  declare_parameter("wiggle_for_initial_perception", false);
+  declare_parameter("wiggle_during_approach_if_perception_lost", false);
+  declare_parameter("wiggler", "");
   declare_parameter("undock_linear_tolerance", 0.05);
   declare_parameter("undock_angular_tolerance", 0.05);
   declare_parameter("max_retries", 3);
@@ -115,6 +118,17 @@ DockingServer::on_configure(const rclcpp_lifecycle::State & state)
     return nav2_util::CallbackReturn::FAILURE;
   }
 
+  std::string wiggler_plugin_type;
+  std::string plugin_str = get_parameter("wiggler").as_string();
+  if (plugin_str.empty()) {
+    wiggler_ = nullptr;
+  } else {
+    wiggler_plugin_type = get_plugin_type_param(node, plugin_str);
+    wiggler_ = getWigglerPlugin(wiggler_plugin_type);
+  } if (wiggler_) {
+    wiggler_->configure(node, plugin_str, tf2_buffer_);
+  }
+
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -132,6 +146,9 @@ DockingServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
   docking_action_server_->activate();
   undocking_action_server_->activate();
   curr_dock_type_.clear();
+  if (wiggler_) {
+    wiggler_->activate();
+  }
 
   // Add callback for dynamic parameters
   dyn_params_handler_ = node->add_on_set_parameters_callback(
@@ -154,6 +171,10 @@ DockingServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   navigator_->deactivate();
   vel_publisher_->on_deactivate();
 
+  if (wiggler_) {
+    wiggler_->deactivate();
+  }
+
   remove_on_set_parameters_callback(dyn_params_handler_.get());
   dyn_params_handler_.reset();
   tf2_listener_.reset();
@@ -175,6 +196,7 @@ DockingServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   navigator_.reset();
   curr_dock_type_.clear();
   controller_.reset();
+  wiggler_.reset();
   vel_publisher_.reset();
   dock_backwards_.reset();
   odom_sub_.reset();
@@ -430,13 +452,34 @@ Dock * DockingServer::generateGoalDock(std::shared_ptr<const DockRobot::Goal> go
   return dock;
 }
 
-void DockingServer::doInitialPerception(Dock * dock, geometry_msgs::msg::PoseStamped & dock_pose)
+std::shared_ptr<opennav_docking_core::Wiggler> DockingServer::getWigglerPlugin(const std::string & plugin_name)
+{
+  try {
+    auto wiggler = wiggler_loader_.createUniqueInstance(plugin_name);
+    RCLCPP_INFO(get_logger(), "Successfully created Wiggler plugin: %s", plugin_name.c_str());
+    return wiggler;
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(
+      get_logger(),
+      "Failed to create Wiggler plugin %s: %s", plugin_name.c_str(), e.what());
+    return nullptr;
+  }
+}
+
+void DockingServer::doInitialPerception(Dock *dock, geometry_msgs::msg::PoseStamped & dock_pose)
 {
   publishDockingFeedback(DockRobot::Feedback::INITIAL_PERCEPTION);
   rclcpp::Rate loop_rate(controller_frequency_);
   auto start = this->now();
   auto timeout = rclcpp::Duration::from_seconds(initial_perception_timeout_);
   while (!dock->plugin->getRefinedPose(dock_pose, dock->id)) {
+    if (wiggler_ && get_parameter("wiggle_for_initial_perception").as_bool()) {
+      auto wiggle_vel = std::make_unique<geometry_msgs::msg::TwistStamped>();
+      wiggle_vel->header.stamp = now();
+      wiggler_->getWiggleVelocity(wiggle_vel->twist);
+      vel_publisher_->publish(std::move(wiggle_vel));
+    }
+
     if (this->now() - start > timeout) {
       throw opennav_docking_core::FailedToDetectDock("Failed initial dock detection");
     }
@@ -494,6 +537,7 @@ bool DockingServer::approachDock(
   rclcpp::Rate loop_rate(controller_frequency_);
   auto start = this->now();
   auto timeout = rclcpp::Duration::from_seconds(dock_approach_timeout_);
+  bool should_wiggle = get_parameter("wiggle_during_approach_if_perception_lost").as_bool() && !dock->plugin->shouldRotateToDock();
 
   while (rclcpp::ok()) {
     publishDockingFeedback(DockRobot::Feedback::CONTROLLING);
@@ -511,6 +555,15 @@ bool DockingServer::approachDock(
     }
 
     // Update perception
+    if (should_wiggle) {
+      while (wiggler_ && !dock->plugin->getRefinedPose(dock_pose, dock->id) && this->now() - start < timeout) {
+        auto wiggle_vel = std::make_unique<geometry_msgs::msg::TwistStamped>();
+        wiggle_vel->header.stamp = now();
+        wiggler_->getWiggleVelocity(wiggle_vel->twist);
+        vel_publisher_->publish(std::move(wiggle_vel));
+      }
+    }
+
     if (!dock->plugin->getRefinedPose(dock_pose, dock->id) && !dock->plugin->shouldRotateToDock()) {
       throw opennav_docking_core::FailedToDetectDock("Failed dock detection");
     }
@@ -546,7 +599,7 @@ bool DockingServer::approachDock(
 
     if (this->now() - start > timeout) {
       throw opennav_docking_core::FailedToControl(
-              "Timed out approaching dock; dock nor charging (if applicable) detected");
+            "Timed out approaching dock; dock nor charging (if applicable) detected");
     }
 
     loop_rate.sleep();

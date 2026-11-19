@@ -556,11 +556,22 @@ bool DockingServer::approachDock(
 
     // Update perception
     if (should_wiggle) {
-      while (wiggler_ && !dock->plugin->getRefinedPose(dock_pose, dock->id) && this->now() - start < timeout) {
+      while (rclcpp::ok() && wiggler_ && !dock->plugin->getRefinedPose(dock_pose, dock->id) &&
+        this->now() - start < timeout)
+      {
+        // Stop if cancelled/preempted
+        if (checkAndWarnIfCancelled(docking_action_server_, "dock_robot") ||
+          checkAndWarnIfPreempted(docking_action_server_, "dock_robot"))
+        {
+          return false;
+        }
+
         auto wiggle_vel = std::make_unique<geometry_msgs::msg::TwistStamped>();
         wiggle_vel->header.stamp = now();
         wiggler_->getWiggleVelocity(wiggle_vel->twist);
         vel_publisher_->publish(std::move(wiggle_vel));
+
+        loop_rate.sleep();
       }
     }
 

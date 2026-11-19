@@ -75,8 +75,11 @@ public:
 
   virtual bool getRefinedPose(geometry_msgs::msg::PoseStamped &, std::string)
   {
-    // Always return false to trigger a timeout, when no exceptions are thrown
-    return false;
+    // Detect the dock for the first "refined_pose_successes" calls (default 0), then
+    // always return false to trigger a timeout or a lost detection
+    int successes = 0;
+    node_->get_parameter_or("refined_pose_successes", successes, 0);
+    return refined_pose_calls_++ < successes;
   }
 
   virtual bool isDocked()
@@ -103,6 +106,7 @@ public:
 
 protected:
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  int refined_pose_calls_{0};
 };
 
 }  // namespace opennav_docking

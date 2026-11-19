@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <string>
+#include <thread>
 #include "gtest/gtest.h"
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -27,6 +31,31 @@ using namespace std::chrono_literals;  // NOLINT
 
 namespace opennav_docking
 {
+
+// Forwards to the configured wiggler and counts the wiggle commands
+class CountingWiggler : public opennav_docking_core::Wiggler
+{
+public:
+  explicit CountingWiggler(std::shared_ptr<opennav_docking_core::Wiggler> wiggler)
+  : wiggler_(wiggler) {}
+
+  void configure(
+    const rclcpp_lifecycle::LifecycleNode::WeakPtr &, const std::string &,
+    std::shared_ptr<tf2_ros::Buffer>) override {}
+  void cleanup() override {wiggler_->cleanup();}
+  void activate() override {wiggler_->activate();}
+  void deactivate() override {wiggler_->deactivate();}
+  void getWiggleVelocity(geometry_msgs::msg::Twist & wiggle_vel) override
+  {
+    calls++;
+    wiggler_->getWiggleVelocity(wiggle_vel);
+  }
+
+  std::atomic<int> calls{0};
+
+private:
+  std::shared_ptr<opennav_docking_core::Wiggler> wiggler_;
+};
 
 class DockingServerShim : public DockingServer
 {
@@ -43,6 +72,13 @@ public:
   std::optional<bool> getDockBackward()
   {
     return dock_backwards_;
+  }
+
+  std::shared_ptr<CountingWiggler> countWiggles()
+  {
+    auto counting_wiggler = std::make_shared<CountingWiggler>(wiggler_);
+    wiggler_ = counting_wiggler;
+    return counting_wiggler;
   }
 };
 
@@ -308,6 +344,103 @@ TEST(DockingServerTests, testDockBackward)
   node->on_cleanup(rclcpp_lifecycle::State());
 
   node->on_shutdown(rclcpp_lifecycle::State());
+  node.reset();
+}
+
+TEST(DockingServerTests, testWiggleDuringApproachRateAndCancel)
+{
+  auto node = std::make_shared<DockingServerShim>();
+  auto node_thread = std::make_unique<nav2_util::NodeThread>(node);
+  auto node2 = std::make_shared<rclcpp::Node>("wiggle_client_node");
+
+  // A dock that is detected once (initial perception), then lost during the approach
+  node->declare_parameter(
+    "docks",
+    rclcpp::ParameterValue(std::vector<std::string>{"test_dock"}));
+  node->declare_parameter(
+    "test_dock.type",
+    rclcpp::ParameterValue(std::string{"dock_plugin"}));
+  node->declare_parameter(
+    "test_dock.pose",
+    rclcpp::ParameterValue(std::vector<double>{0.0, 0.0, 0.0}));
+  node->declare_parameter(
+    "test_dock.frame",
+    rclcpp::ParameterValue(std::string{"odom"}));
+  node->declare_parameter(
+    "dock_plugins",
+    rclcpp::ParameterValue(std::vector<std::string>{"dock_plugin"}));
+  node->declare_parameter(
+    "dock_plugin.plugin",
+    rclcpp::ParameterValue(std::string{"opennav_docking::TestFailureDock"}));
+  node->declare_parameter("exception_to_throw", rclcpp::ParameterValue(""));
+  node->declare_parameter("dock_action_called", rclcpp::ParameterValue(false));
+  node->declare_parameter("refined_pose_successes", rclcpp::ParameterValue(1));
+  node->declare_parameter(
+    "wiggle.plugin",
+    rclcpp::ParameterValue(std::string{"opennav_docking::RotateInPlaceWiggler"}));
+  node->set_parameter(rclcpp::Parameter("wiggler", std::string("wiggle")));
+  node->set_parameter(rclcpp::Parameter("wiggle_during_approach_if_perception_lost", true));
+  node->set_parameter(rclcpp::Parameter("controller_frequency", 50.0));
+  node->set_parameter(rclcpp::Parameter("dock_approach_timeout", 4.0));
+  node->set_parameter(rclcpp::Parameter("max_retries", 0));
+
+  node->on_configure(rclcpp_lifecycle::State());
+  auto wiggler = node->countWiggles();
+  node->on_activate(rclcpp_lifecycle::State());
+
+  auto client = rclcpp_action::create_client<DockRobot>(node2, "dock_robot");
+  ASSERT_TRUE(client->wait_for_action_server(2s));
+  auto goal_msg = DockRobot::Goal();
+  goal_msg.dock_id = "test_dock";
+  goal_msg.navigate_to_staging_pose = false;
+  auto future_goal_handle = client->async_send_goal(goal_msg);
+  ASSERT_EQ(
+    rclcpp::spin_until_future_complete(node2, future_goal_handle, 2s),
+    rclcpp::FutureReturnCode::SUCCESS);
+  auto goal_handle = future_goal_handle.get();
+  ASSERT_TRUE(goal_handle);
+
+  // Wait for the wiggle to start, then count its commands over 1 s
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (wiggler->calls == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_GT(wiggler->calls, 0);
+  int calls_start = wiggler->calls;
+  std::this_thread::sleep_for(1s);
+  int calls_in_1s = wiggler->calls - calls_start;
+
+  // The wiggle publishes at controller_frequency (50 Hz), with margin for a loaded host
+  EXPECT_GT(calls_in_1s, 0);
+  EXPECT_LT(calls_in_1s, 100);
+
+  // A cancel during the wiggle ends the goal promptly
+  auto cancel_start = std::chrono::steady_clock::now();
+  auto future_cancel = client->async_cancel_goal(goal_handle);
+  auto future_result = client->async_get_result(goal_handle);
+  ASSERT_EQ(
+    rclcpp::spin_until_future_complete(node2, future_result, 10s),
+    rclcpp::FutureReturnCode::SUCCESS);
+  double cancel_to_result_s = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - cancel_start).count();
+  auto result = future_result.get();
+
+  EXPECT_LT(cancel_to_result_s, 1.0);
+  EXPECT_EQ(result.code, rclcpp_action::ResultCode::CANCELED);
+  EXPECT_EQ(result.result->error_code, DockRobot::Result::NONE);
+
+  // No wiggle commands after the goal ended
+  int calls_at_result = wiggler->calls;
+  std::this_thread::sleep_for(200ms);
+  EXPECT_EQ(wiggler->calls, calls_at_result);
+
+  // Release the plugin instance before the server destroys its class loader
+  wiggler.reset();
+  node->on_deactivate(rclcpp_lifecycle::State());
+  node->on_cleanup(rclcpp_lifecycle::State());
+  node->on_shutdown(rclcpp_lifecycle::State());
+  // Stop spinning the server before destroying it
+  node_thread.reset();
   node.reset();
 }
 
